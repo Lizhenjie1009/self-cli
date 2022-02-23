@@ -1,0 +1,62 @@
+node('jenkins-slave') {
+
+    //git代码路径
+    def gitrepoUrl = 'http://192.168.240.139:3000/testdemo/vue-admin-template.git'
+    env.GIT_BRANCH = GIT_BRANCH.replace('origin/','')
+    
+    env.ProjectName = 'testdemo'
+    env.imgrepoAddr = 'repository.lhczke.local'
+    
+    env.FE_PRONAME = "vue-admin-template"
+    env.BDATE = new Date().format("yyyyMMdd_HHmmss")
+
+    //清空工作目录
+    //deleteDir()
+
+    stage('get clone') {
+        //check CODE
+        container('jnlp') {
+            sh "echo ${GIT_BRANCH}"
+            // git branch: "develop", credentialsId: 'CICD-Global-User', url: "${gitrepoUrl}"
+            git branch: "${GIT_BRANCH}", credentialsId: 'CICD-Global-User', url: "${gitrepoUrl}"
+            env.GIT_COMMIT_ID = sh(returnStdout: true, script: 'git rev-parse --short=10 HEAD').trim()
+        }
+    }
+
+    stage('build'){
+        //编译打包
+        container('jnlp') {
+            nodejs(cacheLocationStrategy: workspace(), nodeJSInstallationName: 'Node-v10') {
+                sh "npm config set cache ${AGENT_WORKDIR}/workspace"
+                sh "npm config set registry http://192.168.240.142:58081/repository/npm-all/"
+                sh "npm config set sass_binary_site=http://192.168.240.142:58081/repository/taobao-node-sass"
+                sh "npm install"
+                sh "npm run build:prod"
+            }
+        }
+    }
+    
+    stage('build image') {
+        container('docker') {
+            sh "echo \"192.168.240.146 ${imgrepoAddr}\" >> /etc/hosts"
+            sh "cat /etc/hosts"
+            sh "bash Parse_tpl.sh"
+            sh "cd buildimg && docker build -t ${imgrepoAddr}/${ProjectName}/${FE_PRONAME}:${GIT_BRANCH}-${BDATE}-${GIT_COMMIT_ID} ."
+        }
+    }
+
+    stage('push image') {
+        container('docker') {
+            withDockerRegistry(credentialsId: 'Registry', url: "http://${imgrepoAddr}") {
+                sh "docker push ${imgrepoAddr}/${ProjectName}/${FE_PRONAME}:${GIT_BRANCH}-${BDATE}-${GIT_COMMIT_ID}"
+            }
+        }
+    }
+    
+    stage('kubernetes deploy') {
+        container('docker') {
+            sh "envsubst < k8s_deployment.tpl > k8s_deployment.yaml"
+            sh "kubectl apply -f k8s_deployment.yaml"
+        }
+    }
+}
